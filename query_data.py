@@ -4,6 +4,7 @@ from langchain.prompts import ChatPromptTemplate
 from langchain_community.llms.ollama import Ollama
 
 from get_embedding_function import get_embedding_function
+import gradio as gr
 
 CHROMA_PATH = "chroma"
 
@@ -38,7 +39,7 @@ def query_rag(query_text: str):
     context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
     prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
     prompt = prompt_template.format(context=context_text, question=query_text)
-    # print(prompt)
+    print(prompt)
 
     model = Ollama(model="llama3")
     response_text = model.invoke(prompt)
@@ -49,5 +50,14 @@ def query_rag(query_text: str):
     return response_text
 
 
-if __name__ == "__main__":
-    main()
+# Define Gradio interface
+iface = gr.Interface(
+    fn=query_rag,
+    inputs=gr.Textbox(lines=3, placeholder="Enter your question here..."),
+    outputs="text",
+    title="RAG Query",
+    description="A tool to query information using a RAG model."
+)
+
+# Launch the interface
+iface.launch(share=True)
