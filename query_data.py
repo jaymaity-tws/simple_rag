@@ -60,4 +60,4 @@ iface = gr.Interface(
 )
 
 # Launch the interface
-iface.launch(share=True)
+iface.launch(server_name="0.0.0.0")
