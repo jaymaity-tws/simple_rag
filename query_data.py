@@ -1,63 +1,87 @@
-import argparse
-from langchain.vectorstores.chroma import Chroma
-from langchain.prompts import ChatPromptTemplate
-from langchain_community.llms.ollama import Ollama
+import logging
+import sys
 
-from get_embedding_function import get_embedding_function
-import gradio as gr
+import chromadb
+from langchain_community.embeddings import OllamaEmbeddings
+from llama_index.core import Settings, PromptTemplate, StorageContext, VectorStoreIndex
+from llama_index.llms.ollama import Ollama
+from llama_index.vector_stores.chroma import ChromaVectorStore
 
-CHROMA_PATH = "chroma"
+from populate_database import CHROMA_PATH
 
-PROMPT_TEMPLATE = """
-Answer the question based only on the following context:
+from openinference.instrumentation.llama_index import LlamaIndexInstrumentor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
-{context}
+endpoint = "http://10.0.0.188:6008/v1/traces"
+tracer_provider = TracerProvider()
+tracer_provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint)))
 
----
-
-Answer the question based on the above context: {question}
-"""
-
-
-def main():
-    # Create CLI.
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--query_text", type=str, help="The query text.")
-    args = parser.parse_args()
-    query_text = args.query_text
-    query_rag(query_text)
+LlamaIndexInstrumentor().instrument(tracer_provider=tracer_provider)
 
 
-def query_rag(query_text: str):
-    # Prepare the DB.
-    embedding_function = get_embedding_function()
-    db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding_function)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    # Search the DB.
-    results = db.similarity_search_with_score(query_text, k=5)
-
-    context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
-    prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-    prompt = prompt_template.format(context=context_text, question=query_text)
-    print(prompt)
-
-    model = Ollama(model="llama3")
-    response_text = model.invoke(prompt)
-
-    sources = [doc.metadata.get("id", None) for doc, _score in results]
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
-    return response_text
+global query_engine
+query_engine = None
 
 
-# Define Gradio interface
-iface = gr.Interface(
-    fn=query_rag,
-    inputs=gr.Textbox(lines=3, placeholder="Enter your question here..."),
-    outputs="text",
-    title="RAG Query",
-    description="A tool to query information using a RAG model."
-)
+def init_llm():
+    llm = Ollama(model="llama3", request_timeout=3000.0)
+    embed_model = OllamaEmbeddings(model="nomic-embed-text")
 
-# Launch the interface
-iface.launch(server_name="0.0.0.0")
+    Settings.llm = llm
+    Settings.embed_model = embed_model
+
+
+def init_index():
+    chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+    chroma_collection = chroma_client.get_collection("iollama")
+    vector_store = ChromaVectorStore(
+        chroma_collection=chroma_collection, embedding_function=Settings.embed_model
+    )
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+    # Create index from the existing vector store
+    index = VectorStoreIndex.from_vector_store(vector_store=vector_store, storage_context=storage_context)
+    return index
+
+
+def init_query_engine(index):
+    global query_engine
+
+    # Custom prompt template
+    template = (
+        "You are a helpful assistant.\n\n"
+        "Here is the context related to the query:\n"
+        "-----------------------------------------\n"
+        "{context_str}\n"
+        "-----------------------------------------\n"
+        "Considering the above information, please respond to the following inquiry\n\n"
+        "Question: {query_str}\n\n"
+    )
+    qa_template = PromptTemplate(template)
+
+    # Build query engine with custom template
+    query_engine = index.as_query_engine(llm=Settings.llm, text_qa_template=qa_template, similarity_top_k=3)
+
+    return query_engine
+
+
+def chat(input_question):
+    global query_engine
+
+    response = query_engine.query(input_question)
+    logging.info("got response from llm - %s", response)
+
+    return response.response
+
+
+if __name__ == "__main__":
+    init_llm()
+    INDEX = init_index()
+    init_query_engine(INDEX)
+    QUESTION = "what did it say about NDA?"
+    REPLY = chat(QUESTION)
+    print(REPLY)

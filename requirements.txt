@@ -3,3 +3,17 @@ langchain
 chromadb # Vector storage
 pytest
 gradio
+unstructured[pdf]
+matplotlib
+pandas
+arize-phoenix[evals,llama-index]
+gcsfs
+nest-asyncio
+openinference-instrumentation-llama-index>=2.0.0
+llama-index
+ollama
+ollama-python
+llama-index-embeddings-langchain
+llama-index-llms-ollama
+llama-index-vector-stores-chroma
+
